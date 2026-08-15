@@ -310,6 +310,31 @@ class DataContext:
     execution_options: "ExecutionOptions" = field(
         default_factory=_execution_options_factory
     )
+    # Operator scheduling policy for baseline experiments:
+    #   None    = default Ray Data (least memory usage)
+    #   "llf_v1" = Cameo LLF with t_M=0, L=0 (collapses to stage-by-stage)
+    #   "llf_v2" = Cameo LLF with t_M=i*T, L=configurable
+    #   "edf"    = Cameo EDF (deadline without self-cost C_oM)
+    scheduling_policy: Optional[str] = "llf_v2"
+    # Inter-arrival time T for LLF v2: t_M = partition_index * T (seconds).
+    llf_inter_arrival_time: float = 1
+    # Latency target L for LLF v2/EDF (seconds). If None, auto-computed as
+    # sum(avg_task_duration for all ops) (floored at 1.0 during cold start).
+    llf_latency_target: Optional[float] = 5
+    # Disable Ray Data's Algorithm-2 memory admission for the Cameo baseline.
+    # Bypasses the two OpResourceAllocator hooks that Cameo lacks:
+    #   - process_completed_tasks: skips the output-side throttle
+    #     (OpResourceAllocator.max_task_output_bytes_to_read).
+    #   - select_operator_to_run: skips the submission-side throttle
+    #     (OpResourceAllocator.can_submit_new_task).
+    # ConcurrencyCapBackpressurePolicy stays on — it models Cameo's fixed
+    # worker pool (N workers pulling from channels), which is architectural,
+    # not part of Ray Data's dynamic memory machinery.
+    llf_disable_admission_control: bool = True
+    # Path to a JSONL file where per-tick LLF scheduling decisions are logged.
+    llf_trace_path: Optional[str] = None
+    # Minimum wall-clock interval between consecutive trace records (seconds).
+    llf_trace_min_interval: float = 0.05
     use_ray_tqdm: bool = DEFAULT_USE_RAY_TQDM
     enable_progress_bars: bool = DEFAULT_ENABLE_PROGRESS_BARS
     # By default, enable the progress bar for operator-level progress.
@@ -324,9 +349,9 @@ class DataContext:
     )
     write_file_retry_on_errors: List[str] = DEFAULT_WRITE_FILE_RETRY_ON_ERRORS
     warn_on_driver_memory_usage_bytes: int = DEFAULT_WARN_ON_DRIVER_MEMORY_USAGE_BYTES
-    actor_task_retry_on_errors: Union[
-        bool, List[BaseException]
-    ] = DEFAULT_ACTOR_TASK_RETRY_ON_ERRORS
+    actor_task_retry_on_errors: Union[bool, List[BaseException]] = (
+        DEFAULT_ACTOR_TASK_RETRY_ON_ERRORS
+    )
     op_resource_reservation_enabled: bool = DEFAULT_ENABLE_OP_RESOURCE_RESERVATION
     op_resource_reservation_ratio: float = DEFAULT_OP_RESOURCE_RESERVATION_RATIO
     max_errored_blocks: int = DEFAULT_MAX_ERRORED_BLOCKS
@@ -340,6 +365,35 @@ class DataContext:
     retried_io_errors: List[str] = field(
         default_factory=lambda: list(DEFAULT_RETRIED_IO_ERRORS)
     )
+
+    # Scheduling policy selector. None means the default (resource-aware) policy.
+    # Set to "microbatch" to emulate Spark-Streaming / Drizzle-style BSP execution.
+    # The microbatch policy is parameterized by three knobs:
+    #   - microbatch_size (B): bundles per epoch. Epoch = partition_index // B.
+    #   - microbatch_group_size (G): max concurrent epochs. G=1 is strict BSP;
+    #     G>1 relaxes the inter-batch barrier (Drizzle "group scheduling").
+    #   - microbatch_stage_barrier: "strict" enforces the per-epoch intra-batch
+    #     stage barrier; "relaxed" drops it (Drizzle "pre-scheduling").
+    # The four corners of (group_size, stage_barrier) give the standard ablation:
+    #   (1, strict)   = Spark Streaming BSP
+    #   (G, strict)   = group scheduling only
+    #   (1, relaxed)  = pre-scheduling only
+    #   (G, relaxed)  = full Drizzle
+    scheduling_policy: Optional[str] = None
+
+    # Number of input partitions (bundles) per microbatch.
+    microbatch_size: int = 1
+
+    # Max concurrent epochs under the microbatch policy (Drizzle group scheduling).
+    # Must be >= 1. G=1 is strict Spark-Streaming BSP.
+    microbatch_group_size: int = 1
+
+    # Intra-batch stage barrier mode under the microbatch policy.
+    #   "strict"  -- an op may dispatch at epoch E only if every ancestor has
+    #                zero pending epoch-E work (queued or in-flight).
+    #   "relaxed" -- no stage barrier (Drizzle pre-scheduling); downstream tasks
+    #                may start as soon as their inputs are ready.
+    microbatch_stage_barrier: str = "strict"
 
     def __post_init__(self):
         # The additonal ray remote args that should be added to

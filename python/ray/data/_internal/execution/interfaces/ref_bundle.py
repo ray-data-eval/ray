@@ -37,6 +37,16 @@ class RefBundle:
     # output splits. It is otherwise None.
     output_split_idx: Optional[int] = None
 
+    # Wall-clock time when this bundle was first created (by a source operator).
+    # Used by the LLF scheduling policy to compute partition laxity.
+    creation_time: Optional[float] = None
+
+    # Sequential index of this bundle at the source. Used by scheduling policies
+    # that need to group bundles into epochs (microbatch: epoch = idx // B) and
+    # by LLF v2 to compute t_M = partition_index * T.
+    # Stamped by InputDataBuffer and propagated through the DAG via OpState.
+    partition_index: Optional[int] = None
+
     # Cached location, used for get_cached_location().
     _cached_location: Optional[NodeIdStr] = None
 

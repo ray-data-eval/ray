@@ -367,6 +367,7 @@ class DataContext:
     )
 
     # Scheduling policy selector. None means the default (resource-aware) policy.
+    # Set to "static" for round-robin assignment of bundles to actors (section 5.1.2).
     # Set to "microbatch" to emulate Spark-Streaming / Drizzle-style BSP execution.
     # The microbatch policy is parameterized by three knobs:
     #   - microbatch_size (B): bundles per epoch. Epoch = partition_index // B.

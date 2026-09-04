@@ -447,6 +447,8 @@ class _ActorPool(AutoscalingActorPool):
         # Track locality matching stats.
         self._locality_hits: int = 0
         self._locality_misses: int = 0
+        # Next actor for the "static" policy (round-robin).
+        self.current_actor_idx: int = 0
 
     # === Overriding methods of AutoscalingActorPool ===
 
@@ -604,8 +606,15 @@ class _ActorPool(AutoscalingActorPool):
             )
             return requires_remote_fetch, busyness
 
-        # Pick the best valid actor based on the penalty key
-        actor = min(valid_actors, key=penalty_key)
+        if DataContext.get_current().scheduling_policy == "static":
+            # "static": actors take bundles in turn.
+            if self.current_actor_idx >= len(valid_actors):
+                self.current_actor_idx = 0
+            actor = valid_actors[self.current_actor_idx]
+            self.current_actor_idx = (self.current_actor_idx + 1) % len(valid_actors)
+        else:
+            # Pick the best valid actor based on the penalty key
+            actor = min(valid_actors, key=penalty_key)
 
         if locality_hint:
             if self._running_actors[actor].actor_location == preferred_loc:
